@@ -76,3 +76,45 @@ def test_optimal_policy_matches_simulation_and_beats_greedy(solved):
     from rlf.eval.arena import evaluate_policy
     greedy = evaluate_policy(lambda: DespachoEnv.from_size("diminuto"), GreedyDespacho(), 2000)
     assert paired_diff_ci(rets, greedy).lo > 0
+
+
+# ---- T18: Q-learning ---------------------------------------------------------------------------
+from rlf.agents.tabular import QLearning  # noqa: E402
+from rlf.agents.baselines import RandomPolicy  # noqa: E402
+from rlf.eval.arena import evaluate_policy  # noqa: E402
+
+
+def test_q_update_rule_by_hand():
+    q = QLearning(n_actions=3, alpha=0.5, gamma=0.9, eps=0.0)
+    q.Q["a"] = np.array([1.0, 0.0, 2.0])
+    q.Q["b"] = np.array([5.0, -1.0, 3.0])
+    # next options are ids {1, 2}: max over legal only = 3 (id 0 with value 5 is illegal and must be ignored)
+    q.update("a", 0, reward=-1.0, next_key="b", next_option_ids=np.array([1, 2]), done=False)
+    assert q.Q["a"][0] == pytest.approx(1.0 + 0.5 * (-1.0 + 0.9 * 3.0 - 1.0))
+    q.update("a", 2, reward=4.0, next_key="b", next_option_ids=np.array([1, 2]), done=True)   # no bootstrap
+    assert q.Q["a"][2] == pytest.approx(2.0 + 0.5 * (4.0 - 2.0))
+
+
+def test_q_masking_ignores_illegal_ids():
+    q = QLearning(n_actions=4, alpha=0.1, gamma=1.0, eps=0.0, seed=0)
+    q.Q["s"] = np.array([100.0, 1.0, 5.0, 100.0])
+    ids = np.array([1, 2])
+    assert q.act("s", ids) == 1                                   # index of id 2, not the huge illegal values
+    q_explore = QLearning(n_actions=4, alpha=0.1, gamma=1.0, eps=1.0, seed=0)
+    picks = np.array([q_explore.act("s", ids) for _ in range(4000)])
+    assert set(picks) == {0, 1} and abs((picks == 0).mean() - 0.5) < 0.05
+    assert q.act("unseen", np.array([3])) == 0
+
+
+def test_q_learning_smoke_on_diminuto(solved):
+    mdp, (V, Q, pi) = solved
+    v_star = float(mdp.p0 @ V)
+    make = lambda: DespachoEnv.from_size("diminuto")
+    agent = QLearning(n_actions=3, alpha=0.1, gamma=1.0, eps=0.3, seed=0)
+    agent.train(make(), 30_000, seed=0, eps_fn=lambda e: max(0.02, 0.3 * (1 - e / 30_000)))
+    learned = agent.evaluate(make, 2000)
+    optimal = optimal_returns(mdp, pi, 2000)
+    # smoke budget (30k episodes): within 10 % of the optimum; the lesson's 95 % claim uses the full budget
+    assert paired_diff_ci(learned, optimal).lo >= -0.10 * abs(v_star)
+    rand = evaluate_policy(make, RandomPolicy(0), 2000)
+    assert paired_diff_ci(learned, rand).lo > 0
