@@ -9,6 +9,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from rlf.core import EnvSpec, Obs, Step
+
 
 @dataclass(frozen=True)
 class DespachoConfig:
@@ -180,3 +182,80 @@ class DespachoCore:
         pend = tuple(None if p is None else (p[0], p[1], p[2], p[3] - t) for p in self.pend)
         trucks = tuple((x, y, cap, max(0, busy - t)) for (x, y, cap, busy) in self.trucks)
         return (t, pend, trucks)
+
+
+class DespachoEnv:
+    """MiniDespacho with the option-list interface (`rlf.core.Env`)."""
+
+    def __init__(self, cfg: DespachoConfig):
+        self.cfg = cfg
+        self.core = DespachoCore(cfg)
+        K, M = cfg.n_trucks, cfg.max_pending
+        self.spec = EnvSpec(name="despacho", n_players=1, state_dim=3, option_dim=6, entity_dim=6,
+                            max_options=M * K + 1, max_entities=K + M, n_actions=M * K + 1,
+                            max_steps=cfg.max_steps)
+        self.seed = None
+        self._actions: list[int] = []
+        self._nx = max(1, cfg.width - 1)
+        self._ny = max(1, cfg.height - 1)
+        self._nd = max(1, cfg.width + cfg.height - 2)
+
+    @classmethod
+    def from_size(cls, name: str) -> "DespachoEnv":
+        return cls(DespachoConfig.from_size(name))
+
+    def reset(self, seed: int | None = None):
+        self.core.reset(seed)
+        self.seed = self.core.seed
+        return self._obs()
+
+    def state_key(self) -> tuple:
+        return self.core.state_key()
+
+    def step(self, choice: int):
+        if not 0 <= choice < len(self._actions):
+            if self.core.done:
+                raise RuntimeError("step after done")
+            raise IndexError(choice)
+        reward, done, info = self.core.step_action(self._actions[choice])
+        return Step(self._obs(), np.array([reward]), done, info)
+
+    def _obs(self):
+        c, core = self.cfg, self.core
+        K, M, T, Q = c.n_trucks, c.max_pending, c.horizon, c.capacity
+        t = core.t
+        pend, trucks = core.pend, core.trucks
+        opts, ids, refs = [], [], []
+        self._actions = [] if core.done else core.legal_actions()
+        for a in self._actions:
+            ids.append(a)
+            if a == core.wait_id:
+                opts.append([1, 0, 0, 0, 0, 0])
+                refs.append([-1, -1])
+                continue
+            s, k = divmod(a, K)
+            p = pend[s]
+            opts.append([0, core.dist(s, k) / self._nd, core.lateness(s, k) / T,
+                         (trucks[k][2] - p[2]) / Q, min(1.0, max(-1.0, (p[3] - t) / T)), p[2] / Q])
+            refs.append([K + s, k])
+        n = len(ids)
+        ent = np.zeros((K + M, 6), np.float32)
+        mask = np.zeros(K + M, bool)
+        n_free = 0
+        for k, (x, y, cap, busy) in enumerate(trucks):
+            free = busy <= t
+            n_free += free
+            ent[k] = [0, x / self._nx, y / self._ny, cap / Q, max(0, busy - t) / T, 1.0 if free else 0.0]
+            mask[k] = True
+        n_pend = 0
+        for s, p in enumerate(pend):
+            if p is None:
+                continue
+            n_pend += 1
+            ent[K + s] = [1, p[0] / self._nx, p[1] / self._ny, p[2] / Q,
+                          min(1.0, max(-1.0, (p[3] - t) / T)), 1.0]
+            mask[K + s] = True
+        state = np.array([t / T, n_pend / M, n_free / K], np.float32)
+        return Obs(state=state, options=np.array(opts, np.float32).reshape(n, 6),
+                   option_ids=np.array(ids, np.int64), option_refs=np.array(refs, np.int64).reshape(n, 2),
+                   entities=ent, entity_mask=mask, player=0)

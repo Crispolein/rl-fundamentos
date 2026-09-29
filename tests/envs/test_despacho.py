@@ -183,3 +183,100 @@ def test_D11_D13_property_1000_random_episodes(size):
         assert set(b) == {"distance", "lateness", "unserved"}
         assert ret == pytest.approx(-(b["distance"] + b["lateness"] + b["unserved"]))
         assert b["unserved"] % cfg.U == 0
+
+
+# ---- T7: environment with observation --------------------------------------------------------
+from rlf.envs.despacho import DespachoEnv  # noqa: E402
+
+
+def env_at(size, key, **over):
+    e = DespachoEnv(replace(DespachoConfig.from_size(size), p_arrival=0.0, **over))
+    e.reset(0)
+    e.core.set_state(key)
+    return e, e._obs()
+
+
+def test_env_specs():
+    sp = [DespachoEnv.from_size(n).spec for n in SIZES]
+    assert [(s.state_dim, s.option_dim, s.entity_dim) for s in sp] == [(3, 6, 6)] * 3
+    assert [s.max_options for s in sp] == [3, 13, 73]
+    assert [s.n_actions for s in sp] == [3, 13, 73]
+    assert [s.max_entities for s in sp] == [3, 7, 18]
+    assert [s.max_steps for s in sp] == [12, 60, 120]
+    assert all(s.n_players == 1 for s in sp)
+
+
+def test_D10_option_order_and_ids():
+    key = (0, ((1, 1, 1, 6), None, (2, 2, 1, 7), None),
+           ((0, 0, 12, 0), (0, 0, 12, 0), (0, 0, 12, 0)))
+    e, obs = env_at("mediano", key)
+    K, M = 3, 4
+    expect = [0 * K + 0, 0 * K + 1, 0 * K + 2, 2 * K + 0, 2 * K + 1, 2 * K + 2, M * K]
+    assert obs.option_ids.tolist() == expect
+    assert (obs.options[:-1, 0] == 0).all() and obs.options[-1].tolist() == [1, 0, 0, 0, 0, 0]
+    assert obs.option_refs[0].tolist() == [K + 0, 0] and obs.option_refs[4].tolist() == [K + 2, 1]
+    assert obs.option_refs[-1].tolist() == [-1, -1]
+
+
+def test_step_index_maps_to_option():
+    key = (0, ((1, 1, 1, 6), None, None, None), ((0, 0, 12, 0), (0, 0, 12, 0), (0, 0, 12, 0)))
+    e, obs = env_at("mediano", key)
+    st = e.step(1)                                   # option 1 = (slot 0, truck 1)
+    assert st.rewards[0] == -2 and not st.done
+    assert e.core.state_key()[2][1][:3] == (1, 1, 11)
+
+
+def test_option_features():
+    # mediano: 5x5, T=30, Q=12. slot 0 at (2,2) qty 3, due in 10; truck 1 at (0,0) cap 12
+    key = (5, ((2, 2, 3, 10), None, None, None), ((0, 0, 12, 0), (0, 0, 12, 0), (0, 0, 12, 0)))
+    e, obs = env_at("mediano", key)
+    row = obs.options[0]                             # (slot 0, truck 0): d = 4, arrives 9 <= due 15
+    assert row[0] == 0 and row[1] == pytest.approx(4 / 8) and row[2] == 0
+    assert row[3] == pytest.approx(9 / 12) and row[4] == pytest.approx(10 / 30) and row[5] == pytest.approx(3 / 12)
+
+
+def test_option_lateness_feature():
+    key = (0, ((4, 4, 1, 3), None, None, None), ((0, 0, 12, 0),) * 3)   # d = 8 > due 3 -> late 5
+    e, obs = env_at("mediano", key)
+    assert obs.options[0, 2] == pytest.approx(5 / 30)
+
+
+def test_state_and_entities_encoding():
+    key = (6, ((1, 1, 3, 10), None, None, None), ((2, 0, 6, 0), (0, 4, 12, 4), (0, 0, 12, 0)))
+    e, obs = env_at("mediano", key)
+    assert obs.state.tolist() == pytest.approx([6 / 30, 1 / 4, 2 / 3])
+    ent = obs.entities
+    assert ent.shape == (7, 6) and obs.entity_mask.tolist() == [True] * 3 + [True, False, False, False]
+    assert ent[0].tolist() == pytest.approx([0, 2 / 4, 0, 6 / 12, 0, 1])
+    assert ent[1].tolist() == pytest.approx([0, 0, 1, 1, 4 / 30, 0])             # busy: marca 0
+    assert ent[3].tolist() == pytest.approx([1, 1 / 4, 1 / 4, 3 / 12, 10 / 30, 1])
+    assert (ent[4:] == 0).all()
+
+
+def test_entity_time_is_clipped():
+    key = (10, ((1, 1, 1, -50), None, None, None), ((0, 0, 12, 0),) * 3)
+    e, obs = env_at("mediano", key)
+    assert obs.entities[3, 4] == -1.0 and obs.options[0, 4] == -1.0
+
+
+def test_D12_state_key_format_and_hashable():
+    e = DespachoEnv.from_size("mediano")
+    e.reset(2)
+    t, pend, trucks = e.state_key()
+    hash(e.state_key())
+    assert t == 0 and len(pend) == 4 and len(trucks) == 3
+    assert trucks[0] == (0, 0, 12, 0)
+
+
+def test_env_return_matches_cost_breakdown():
+    e = DespachoEnv.from_size("diminuto")
+    rng = np.random.default_rng(1)
+    for ep in range(50):
+        obs = e.reset(ep)
+        ret, done = 0.0, False
+        while not done:
+            st = e.step(int(rng.integers(obs.n_options)))
+            ret += st.rewards[0]
+            obs, done = st.obs, st.done
+        b = st.info["cost_breakdown"]
+        assert ret == pytest.approx(-sum(b.values()))
