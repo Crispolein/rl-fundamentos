@@ -844,3 +844,7 @@ en "diminuto" (valor esperado del estado inicial; es negativo porque son costos)
 Vacío al diseñar. Quien implemente añade aquí, con fecha, los números medidos que justifiquen cualquier ajuste
 permitido por este documento (`capacity`/`p_arrival` en D14; pasos de entrenamiento por notebook; signo y magnitud del sesgo
 de asiento de R7). Un umbral de criterio nunca se edita aquí: solo Christian lo cambia.
+
+- 2026-09-29 · T8 · D14 (ii) en "mediano" **sin ajuste** de `capacity`/`p_arrival`: mejor-en-retrospectiva − greedy
+  = +19,995 (IC 95 % [17,79; 22,20], n = 1000); retorno medio de greedy −77,47. MDP exacto de "diminuto":
+  2427 estados (91 terminales), 6020 transiciones no nulas (límite 200 000).

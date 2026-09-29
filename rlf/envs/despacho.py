@@ -5,7 +5,7 @@ with observations lives further down (`DespachoEnv`).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -259,3 +259,109 @@ class DespachoEnv:
         return Obs(state=state, options=np.array(opts, np.float32).reshape(n, 6),
                    option_ids=np.array(ids, np.int64), option_refs=np.array(refs, np.int64).reshape(n, 2),
                    entities=ent, entity_mask=mask, player=0)
+
+
+@dataclass(frozen=True)
+class MDP:
+    keys: list               # keys[s] = state_key of state s
+    index: dict              # inverse of keys
+    nA: int                  # = spec.n_actions
+    legal: np.ndarray        # bool [nS, nA]
+    R: np.ndarray            # float64 [nS, nA]; expected immediate reward (0 if not legal)
+    src: np.ndarray          # int64 [m]  } sparse (COO) transitions: P(dst | src, act) = prob
+    act: np.ndarray          # int64 [m]  }
+    dst: np.ndarray          # int64 [m]  }
+    prob: np.ndarray         # float64 [m]}
+    terminal: np.ndarray     # bool [nS]; absorbing states (V = 0)
+    p0: np.ndarray           # float64 [nS]; initial-state distribution
+
+
+def build_mdp(cfg: DespachoConfig, max_states: int = 200_000) -> MDP:
+    """Exact MDP by breadth-first search, with the exact expectation over the arrivals of D2."""
+    K, M, T, U = cfg.n_trucks, cfg.max_pending, cfg.horizon, cfg.U
+    core = DespachoCore(replace(cfg, p_arrival=0.0))          # dynamics without arrivals
+    cells = [(x, y) for y in range(cfg.height) for x in range(cfg.width)]
+    qtys = range(cfg.qty_range[0], cfg.qty_range[1] + 1)
+    slacks = range(cfg.slack_range[0], cfg.slack_range[1] + 1)
+    n_out = len(cells) * len(qtys) * len(slacks)
+
+    def arrivals(pend: tuple, tick: int):
+        """Outcomes (prob, pend', reward) of the arrival of `tick` (D2)."""
+        if tick >= T or cfg.p_arrival == 0.0:
+            return [(1.0, pend, 0.0)]
+        out = [(1.0 - cfg.p_arrival, pend, 0.0)]
+        pr = cfg.p_arrival / n_out
+        free = next((s for s, p in enumerate(pend) if p is None), None)
+        for (x, y) in cells:
+            for q in qtys:
+                for sl in slacks:
+                    if free is None:
+                        out.append((pr, pend, -U))
+                    else:
+                        out.append((pr, pend[:free] + ((x, y, q, sl),) + pend[free + 1:], 0.0))
+        return out
+
+    keys: list = []
+    index: dict = {}
+
+    def idx(key):
+        i = index.get(key)
+        if i is None:
+            i = index[key] = len(keys)
+            keys.append(key)
+            assert len(keys) <= max_states, f"MDP has more than {max_states} states"
+        return i
+
+    depot = tuple((0, 0, cfg.capacity, 0) for _ in range(K))
+    p0_map: dict = {}
+    for pr, pend, _ in arrivals((None,) * M, 0):
+        i = idx((0, pend, depot))
+        p0_map[i] = p0_map.get(i, 0.0) + pr
+
+    trans: dict = {}
+    reward: dict = {}
+    legal_pairs = []
+    terminal_flags: dict = {}
+    s = 0
+    while s < len(keys):
+        key = keys[s]
+        t = key[0]
+        if t >= T:
+            terminal_flags[s] = True
+            s += 1
+            continue
+        core.set_state(key)
+        for a in core.legal_actions():
+            core.set_state(key)
+            r, done, _ = core.step_action(a)
+            nxt = core.state_key()
+            if a == core.wait_id and not done:
+                outs = [(pr, (nxt[0], pend2, nxt[2]), r + ra) for pr, pend2, ra in arrivals(nxt[1], nxt[0])]
+            else:
+                outs = [(1.0, nxt, r)]
+            legal_pairs.append((s, a))
+            er = 0.0
+            for pr, k2, rr in outs:
+                d = idx(k2)
+                trans[(s, a, d)] = trans.get((s, a, d), 0.0) + pr
+                er += pr * rr
+            reward[(s, a)] = er
+        s += 1
+
+    nS, nA = len(keys), cfg.n_actions
+    legal = np.zeros((nS, nA), bool)
+    R = np.zeros((nS, nA))
+    for (s_, a_) in legal_pairs:
+        legal[s_, a_] = True
+        R[s_, a_] = reward[(s_, a_)]
+    terminal = np.zeros(nS, bool)
+    for s_ in range(nS):
+        terminal[s_] = keys[s_][0] >= T
+    tk = sorted(trans)
+    p0 = np.zeros(nS)
+    for i, pr in p0_map.items():
+        p0[i] = pr
+    return MDP(keys=keys, index=index, nA=nA, legal=legal, R=R,
+               src=np.array([k[0] for k in tk], np.int64), act=np.array([k[1] for k in tk], np.int64),
+               dst=np.array([k[2] for k in tk], np.int64), prob=np.array([trans[k] for k in tk]),
+               terminal=terminal, p0=p0)

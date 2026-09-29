@@ -280,3 +280,125 @@ def test_env_return_matches_cost_breakdown():
             obs, done = st.obs, st.done
         b = st.info["cost_breakdown"]
         assert ret == pytest.approx(-sum(b.values()))
+
+
+# ---- T8: exact MDP and greedy holgura ---------------------------------------------------------
+from rlf.agents.baselines import GreedyDespacho, RandomPolicy  # noqa: E402
+from rlf.core import EVAL_SEED_BASE, BatchObs  # noqa: E402
+from rlf.envs.despacho import build_mdp  # noqa: E402
+from rlf.eval.arena import evaluate_policy  # noqa: E402
+from rlf.eval.stats import paired_diff_ci, passes_lower  # noqa: E402
+
+
+@pytest.fixture(scope="module")
+def mdp():
+    return build_mdp(DespachoConfig.from_size("diminuto"))
+
+
+def test_mdp_structure(mdp):
+    nS = len(mdp.keys)
+    assert nS <= 200_000 and nS > 50
+    assert mdp.nA == 3 and mdp.legal.shape == (nS, 3) and mdp.R.shape == (nS, 3)
+    assert all(mdp.index[k] == i for i, k in enumerate(mdp.keys))
+    assert mdp.p0.sum() == pytest.approx(1.0) and (mdp.p0 > 0).sum() == 4
+    assert mdp.terminal.sum() > 0 and not mdp.legal[mdp.terminal].any()
+    assert mdp.legal[~mdp.terminal, 2].all()                         # wait always legal
+
+
+def test_mdp_p0_is_exact(mdp):
+    assert mdp.p0[mdp.index[(0, (None,), ((0, 0, 2, 0),) * 2)]] == pytest.approx(0.5)
+    one = [i for i in np.flatnonzero(mdp.p0) if mdp.keys[i][1][0] is not None]
+    assert [mdp.p0[i] for i in one] == pytest.approx([1 / 6] * 3)
+
+
+def test_mdp_rows_sum_to_one_and_reward_range(mdp):
+    nS = len(mdp.keys)
+    tot = np.zeros((nS, 3))
+    np.add.at(tot, (mdp.src, mdp.act), mdp.prob)
+    assert np.allclose(tot[mdp.legal], 1.0) and (tot[~mdp.legal] == 0).all()
+    assert (mdp.R[mdp.legal] <= 1e-12).all() and (mdp.R[mdp.legal] >= -14 - 1e-9).all()
+    assert (mdp.prob > 0).all()
+
+
+def test_mdp_last_tick_wait_charges_pending_exactly(mdp):
+    key = (5, ((1, 0, 1, 3),), ((0, 0, 2, 0),) * 2)
+    if key in mdp.index:
+        s = mdp.index[key]
+        assert mdp.R[s, 2] == pytest.approx(-14.0)
+        rows = mdp.dst[(mdp.src == s) & (mdp.act == 2)]
+        assert len(rows) == 1 and mdp.terminal[rows[0]]
+
+
+def test_mdp_fidelity_against_simulation(mdp):
+    rng = np.random.default_rng(0)
+    cands = [(s, a) for s in np.flatnonzero(~mdp.terminal) for a in np.flatnonzero(mdp.legal[s])]
+    pick = rng.choice(len(cands), 20, replace=False)
+    core = DespachoCore(DespachoConfig.from_size("diminuto"))
+    core.reset(0)
+    n = 20_000
+    for pi in pick:
+        s, a = cands[pi]
+        key = mdp.keys[s]
+        rs, nxt = np.zeros(n), []
+        for i in range(n):
+            core.set_state(key, seed=int(pi) if i == 0 else None)
+            r, _, _ = core.step_action(int(a))
+            rs[i] = r
+            nxt.append(core.state_key())
+        se = rs.std(ddof=1) / np.sqrt(n)
+        assert abs(rs.mean() - mdp.R[s, a]) <= 3 * se + 1e-9
+        sel = (mdp.src == s) & (mdp.act == a)
+        expected = dict(zip((mdp.keys[d] for d in mdp.dst[sel]), mdp.prob[sel]))
+        counts = {}
+        for k in nxt:
+            counts[k] = counts.get(k, 0) + 1
+        assert set(counts) <= set(expected)                       # no impossible successor
+        for k, p in expected.items():
+            f = counts.get(k, 0) / n
+            assert abs(f - p) <= 3 * np.sqrt(p * (1 - p) / n) + 1e-9
+
+
+def batch_of(obs):
+    return BatchObs.from_obs(obs, DespachoEnv.from_size("mediano").spec)
+
+
+def test_greedy_picks_smallest_holgura_then_nd_then_index():
+    # slots 1 and 2 tie on the smallest slack (3/30); slot 1 with truck 1 has distance 0
+    key = (0, ((1, 0, 1, 9), (4, 4, 1, 3), (0, 1, 1, 3), None),
+           ((0, 0, 12, 0), (4, 4, 12, 0), (0, 0, 12, 0)))
+    e, obs = env_at("mediano", key)
+    assert obs.option_ids[GreedyDespacho().act(batch_of(obs))[0]] == 1 * 3 + 1
+    # one order, trucks 0 and 2 tie on distance -> lowest index
+    key = (0, ((1, 0, 1, 9), None, None, None), ((0, 0, 12, 0), (4, 4, 12, 0), (0, 0, 12, 0)))
+    e, obs = env_at("mediano", key)
+    assert obs.option_ids[GreedyDespacho().act(batch_of(obs))[0]] == 0
+
+
+def test_greedy_waits_only_if_nothing_to_assign_and_is_deterministic():
+    e, obs = env_at("mediano", (0, (None,) * 4, ((0, 0, 12, 0),) * 3))
+    assert obs.option_ids[GreedyDespacho().act(batch_of(obs))[0]] == 12
+    key = (0, ((1, 0, 1, 9), None, None, None), ((0, 0, 12, 0),) * 3)
+    e, obs = env_at("mediano", key)
+    b = batch_of(obs)
+    assert obs.option_ids[GreedyDespacho().act(b)[0]] != 12
+    assert np.array_equal(GreedyDespacho().act(b), GreedyDespacho().act(b))
+
+
+class NoisyGreedy:
+    def __init__(self, eps, seed):
+        self.g, self.eps, self.rng = GreedyDespacho(), eps, np.random.default_rng(seed)
+
+    def act(self, obs):
+        a = self.g.act(obs)
+        rnd = self.rng.integers(0, obs.n_options)
+        return np.where(self.rng.random(len(a)) < self.eps, rnd, a).astype(np.int64)
+
+
+def test_D14_ii_headroom_over_greedy_mediano():
+    make = lambda: DespachoEnv.from_size("mediano")
+    n = 1000
+    greedy = evaluate_policy(make, NoisyGreedy(0.0, 0), n)
+    best = greedy.copy()
+    for j in range(1, 20):
+        best = np.maximum(best, evaluate_policy(make, NoisyGreedy(0.2, j), n))
+    assert passes_lower(paired_diff_ci(best, greedy), 1e-12)
