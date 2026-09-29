@@ -860,3 +860,8 @@ de asiento de R7). Un umbral de criterio nunca se edita aquí: solo Christian lo
 - 2026-09-29 · T21 · Notebook 05: DQN "diminuto" **80 000 pasos** y "mediano" **100 000 pasos** (8 entornos en paralelo, train_ratio 0,25, red 64×64).
   Calibración en "diminuto" (n = 1000, DQN − óptima, LB frente a umbral −0,420): con 40 000 pasos la semilla 1 dio LB −0,426 (no pasa);
   con 80 000 pasos las semillas 0/1/2 dieron LB −0,070/−0,070/−0,080. "Mediano": DQN −74,6, aleatorio −118,2, greedy −77,5 (s(0,5): +23,3 [20,9; 25,7]).
+- 2026-09-29 · T23 · Notebook 06: REINFORCE en "mediano" con **800 actualizaciones × 64 episodios** (≈ 51 000 episodios, ≈ 175 s de entrenamiento;
+  notebook completo ≈ 4,8 min), lr 1e-3, bono de entropía 0,01, `reward_scale` = 1/68 y ventajas normalizadas (añadido `normalize_adv` a `Reinforce`).
+  Calibración: sin normalizar ventajas, con lr 3e-3/1e-3 y 32–128 episodios por actualización, la política quedó estancada en ≈ −97 (evaluada greedy: LB de s(0,5) entre −4,3 y +0,8,
+  no robusto); evaluada **muestreando** (que es lo que REINFORCE optimiza) y con ventajas normalizadas el LB de la media de d_i fue +4,3 (semilla 0) y +3,0 (semilla 1) a las 800
+  actualizaciones. Referencias: aleatorio −118,2, greedy −77,5, mitad de camino −97,8. Varianza total del gradiente (política final): b=0 225,2; b=media 116,4; b=V(s) 89,8 (cociente 0,399).

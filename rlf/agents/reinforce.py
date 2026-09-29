@@ -30,15 +30,17 @@ class Reinforce:
     of the network regresses G_t and provides b(s_t)."""
 
     def __init__(self, net, baseline: str = "value", gamma: float = 1.0, lr: float = 1e-3, value_coef: float = 0.5,
-                 entropy_coef: float = 0.0, reward_scale: float = 1.0, seed: int = 0):
+                 entropy_coef: float = 0.0, reward_scale: float = 1.0, normalize_adv: bool = False, seed: int = 0):
         assert baseline in ("none", "mean", "value")
         self.net, self.baseline, self.gamma = net, baseline, gamma
         self.value_coef, self.entropy_coef, self.reward_scale = value_coef, entropy_coef, reward_scale
+        self.normalize_adv = normalize_adv
         self.device = next(net.parameters()).device
         self.opt = torch.optim.Adam(net.parameters(), lr=lr)
         self.gen = torch.Generator(device="cpu")
         self.gen.manual_seed(seed)
         self._obs: BatchObs | None = None
+        self._vec = None
         self._fresh: np.ndarray | None = None
         self.history: list = []
 
@@ -51,7 +53,8 @@ class Reinforce:
 
     def collect(self, vec: VecEnv, n_episodes: int) -> list[Episode]:
         """Complete on-policy episodes. Envs that are mid-episode when a call starts wait for their next episode."""
-        if self._obs is None:
+        if self._obs is None or self._vec is not vec:
+            self._vec = vec
             self._obs, self._fresh = vec.reset(), np.ones(vec.n_envs, bool)
         obs, record = self._obs, self._fresh.copy()
         bufs = [{"rows": [], "a": [], "r": []} for _ in range(vec.n_envs)]
@@ -100,7 +103,10 @@ class Reinforce:
             b = g.mean().detach().expand_as(g)
         else:
             b = value.detach()
-        policy_loss = -(logp * (g - b)).mean()
+        adv = g - b
+        if self.normalize_adv:
+            adv = (adv - adv.mean()) / (adv.std() + 1e-8)
+        policy_loss = -(logp * adv).mean()
         value_loss = ((value - g) ** 2).mean() if self.baseline == "value" else torch.zeros((), device=g.device)
         probs = logp_all.exp()
         entropy = -(probs * logp_all.masked_fill(~obs.option_mask, 0.0)).sum(-1).mean()
