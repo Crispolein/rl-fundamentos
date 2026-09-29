@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rlf"
+version = "0.1.0"
+description = "Curso de fundamentos de aprendizaje por refuerzo"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "torch==2.14.0",
+    "numpy==2.5.3",
+    "matplotlib==3.11.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "jupytext==1.19.5",
+    "pytest==9.1.1",
+    "nbmake==1.5.5",
+    "ipykernel==7.3.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["rlf*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-p no:cacheprovider"
