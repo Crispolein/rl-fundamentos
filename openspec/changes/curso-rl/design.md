@@ -870,3 +870,7 @@ de asiento de R7). Un umbral de criterio nunca se edita aquí: solo Christian lo
   Calibración (todas con MLP sobre ids, n = 1000, referencia greedy −77,47): γ = 1, λ = 0,95, 4 épocas, lr 3e-4 con la política **muestreada** quedó estancada en ≈ −91 hasta 1 M pasos
   (LB de PPO − greedy ≈ −16) y llegó a ≈ −76 recién a los 6 M pasos (≈ 7 min); con 10 épocas y lr 1e-3, 2 M pasos dieron −74,5 (LB +0,6); con γ = 0,97 y λ = 0,9 bastan 500 000 pasos.
   Muestreada, esa misma política rinde −75,1 (LB −0,2), por eso se evalúa greedy (−72,9, LB +2,1 a 500 000 pasos). Resultado final semilla 0: −72,33, PPO − greedy = +5,14 [2,70; 7,58].
+- 2026-09-29 · T27 · Notebook 08: pointer en "mediano" **400 000 pasos** (≈ 140 s), MLP sobre ids 150 000 y 400 000 pasos (comparación), pointer en MiniCartas contra el aleatorio **200 000 pasos** (≈ 70 s);
+  PPO γ = 0,97/λ = 0,9/10 épocas en despacho y γ = 1/λ = 0,95/6 épocas en MiniCartas; evaluación greedy; notebook ≈ 4,6 min. Medido (semilla 0): mediano pointer −69,0 vs greedy −77,5 (LB de la diferencia +5,93,
+  umbral −1,55); grande sin reentrenar −1567,5 (aleatorio −1763,0, greedy −1686,3); MiniCartas 0,991 [0,983; 0,995] (umbral LB ≥ 0,70). A 150 000 pasos el pointer y el MLP quedan parejos (−76,4 vs −76,3);
+  a 400 000 el pointer gana por +6,5 [4,4; 8,6]. Prototipo previo: MiniCartas ya llegaba a 0,992 a los 200 000 pasos.

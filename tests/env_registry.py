@@ -1,5 +1,7 @@
 """Every (name, factory) pair here is run through the contract tests in test_env_contract.py."""
+from rlf.agents.baselines import RandomPolicy
 from rlf.envs.bandit import Bandit
+from rlf.envs.wrappers import VsOpponent
 from rlf.envs.cartas import CartasConfig, CartasEnv
 from rlf.envs.despacho import DespachoEnv
 from tests.toy_env import ToyDuel, ToyEnv
@@ -15,4 +17,5 @@ ENVS = {
     "despacho_grande": lambda: DespachoEnv.from_size("grande"),
     "cartas": lambda: CartasEnv(),
     "cartas_random": lambda: CartasEnv(CartasConfig("random", "random")),
+    "cartas_vs_random": lambda: VsOpponent(lambda: CartasEnv(), RandomPolicy(0)),
 }

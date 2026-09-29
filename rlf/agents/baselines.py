@@ -13,6 +13,9 @@ class RandomPolicy:
     def __init__(self, seed: int = 0):
         self.rng = np.random.default_rng(seed)
 
+    def reseed(self, seed: int) -> None:
+        self.rng = np.random.default_rng(seed)
+
     def act(self, obs: BatchObs) -> np.ndarray:
         return self.rng.integers(0, obs.n_options).astype(np.int64)
 
