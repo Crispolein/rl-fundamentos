@@ -50,6 +50,7 @@ class CartasCore:
         self.decks, self.hands, self.prizes = decks, [[], []], [[], []]
         self.discard = [[], []]
         self.mulligans = [0, 0]
+        self.turns = [0, 0]
         for p in (0, 1):
             while True:                                             # R3
                 self.hands[p] = [self.decks[p].pop(0) for _ in range(5)]
@@ -68,12 +69,48 @@ class CartasCore:
         self.phase = "SETUP"                                        # R5
         self.player = 0
 
+    # ---- turn flow ---------------------------------------------------------------------------
+    def _win(self, w: int) -> None:
+        self.done, self.winner, self.phase = True, w, "DONE"
+
+    def _start_turn(self, p: int) -> None:
+        """R6: the player of the turn draws one card; an empty deck loses at once."""
+        self.player, self.phase = p, "MAIN"
+        self.attached = self.support = False
+        self.turns[p] += 1
+        if not self.decks[p]:
+            self._win(1 - p)
+            return
+        self.hands[p].append(self.decks[p].pop(0))
+
+    def _n_bench(self, p: int) -> int:
+        return sum(s is not None for s in self.board[p][1:])
+
     # ---- legal actions -----------------------------------------------------------------------
     def legal_actions(self) -> list[int]:
-        h = self.hands[self.player]
+        if self.done:
+            return []
+        p = self.player
+        h, board = self.hands[p], self.board[p]
         if self.phase == "SETUP":
             return [PLACE_ACTIVE + t for t in sorted({c for c in h if c < 4})]
-        return []
+        if self.phase == "PROMOTE":
+            return [PROMOTE + j for j in range(2) if board[1 + j] is not None]
+        acts = [END_TURN]                                           # R8
+        act = board[0]
+        if act is not None and act[2] >= CARDS_COST[act[0]]:        # R13
+            acts.append(ATTACK)
+        if ENERGY in h and not self.attached:                       # R10
+            acts += [ATTACH + j for j in range(3) if board[j] is not None]
+        if self._n_bench(p) < 2:                                    # R9
+            acts += [PLAY_CREATURE + t for t in sorted({c for c in h if c < 4})]
+        if not self.support:
+            if STUDY in h:                                          # R11
+                acts.append(PLAY_DRAW)
+            if POTION in h:                                         # R12
+                acts += [PLAY_HEAL + j for j in range(3)
+                         if board[j] is not None and board[j][1] < CARDS_HP[board[j][0]]]
+        return sorted(acts)
 
     def step_action(self, a: int):
         if self.done:
@@ -81,12 +118,63 @@ class CartasCore:
         if a not in self.legal_actions():
             raise ValueError(f"illegal action {a}")
         p = self.player
-        if self.phase == "SETUP":
+        if self.phase == "SETUP":                                   # R5
             t = a - PLACE_ACTIVE
             self.hands[p].remove(t)
             self.board[p][0] = [t, int(CARDS_HP[t]), 0]
             if p == 0:
                 self.player = 1
             else:
-                self.phase, self.player = "MAIN", 0
-        return np.zeros(2), self.done, {"mulligans": list(self.mulligans)}
+                self._start_turn(0)
+        elif self.phase == "PROMOTE":                               # R17
+            j = a - PROMOTE
+            self.board[p][0], self.board[p][1 + j] = self.board[p][1 + j], None
+            self._start_turn(p)
+        elif a == END_TURN:                                         # R18
+            self._start_turn(1 - p)
+        elif a == ATTACK:
+            self._attack(p)
+        elif ATTACH <= a < ATTACH + 3:
+            self.hands[p].remove(ENERGY)
+            self.board[p][a - ATTACH][2] += 1
+            self.attached = True
+        elif PLAY_CREATURE <= a < PLAY_CREATURE + 4:
+            t = a - PLAY_CREATURE
+            self.hands[p].remove(t)
+            slot = 1 if self.board[p][1] is None else 2
+            self.board[p][slot] = [t, int(CARDS_HP[t]), 0]
+        elif a == PLAY_DRAW:
+            self.hands[p].remove(STUDY)
+            self.discard[p].append(STUDY)
+            for _ in range(min(2, len(self.decks[p]))):
+                self.hands[p].append(self.decks[p].pop(0))
+            self.support = True
+        else:                                                       # PLAY_HEAL
+            j = a - PLAY_HEAL
+            self.hands[p].remove(POTION)
+            self.discard[p].append(POTION)
+            cr = self.board[p][j]
+            cr[1] = min(int(CARDS_HP[cr[0]]), cr[1] + 3)
+            self.support = True
+        rewards = np.zeros(2)
+        if self.done:                                               # R20
+            rewards[self.winner], rewards[1 - self.winner] = 1.0, -1.0
+        return rewards, self.done, {"mulligans": list(self.mulligans)}
+
+    def _attack(self, p: int) -> None:
+        q = 1 - p
+        target = self.board[q][0]
+        target[1] -= int(CARDS_DMG[self.board[p][0][0]])            # R13: energies are not spent
+        if target[1] > 0:
+            self._start_turn(q)
+            return
+        self.discard[q] += [target[0]] + [ENERGY] * target[2]       # R14
+        self.board[q][0] = None
+        self.hands[p].append(self.prizes[p].pop(0))
+        self.prizes_taken[p] += 1
+        if self.prizes_taken[p] >= 3:                               # R15
+            self._win(p)
+        elif self._n_bench(q) == 0:                                 # R16
+            self._win(p)
+        else:                                                       # R17
+            self.phase, self.player = "PROMOTE", q
