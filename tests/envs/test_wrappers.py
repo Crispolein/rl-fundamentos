@@ -69,3 +69,18 @@ def test_strong_opponent_beats_a_random_learner():
             obs, done = st.obs, st.done
         wins += st.rewards[0] > 0
     assert wins / 200 < 0.2
+
+
+def test_configure_hook_sets_the_learner_deck_by_seat():
+    from rlf.envs.cartas import CartasConfig
+    seen = []
+
+    def configure(env, seat):
+        seen.append(seat)
+        env.core.cfg = CartasConfig("tank", "aggro") if seat == 0 else CartasConfig("aggro", "tank")
+
+    env = VsOpponent(lambda: CartasEnv(), RandomPolicy(0), configure=configure)
+    for seed in (10, 11, 12, 13):
+        env.reset(seed)
+        assert seen[-1] == seed % 2
+        assert env.env.core.deck_names[env.seat] == "tank" and env.env.core.deck_names[1 - env.seat] == "aggro"

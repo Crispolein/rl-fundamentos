@@ -16,17 +16,22 @@ class VsOpponent:
     a `reseed(seed)` method it is called at each reset, which keeps episodes deterministic given the seed.
     """
 
-    def __init__(self, make_env, opponent):
+    def __init__(self, make_env, opponent, configure=None):
         self.env: Env = make_env()
         self.opponent = opponent
+        self.configure = configure               # optional hook(env, learner_seat) run before each reset
         self.spec = replace(self.env.spec, n_players=1)
         self.seed = None
         self.seat = 0
 
     def reset(self, seed: int | None = None) -> Obs:
+        if seed is None:
+            seed = int(np.random.SeedSequence().generate_state(1)[0] % 10_000_000)
+        self.seat = seed % 2
+        if self.configure is not None:
+            self.configure(self.env, self.seat)
         obs = self.env.reset(seed)
         self.seed = self.env.seed
-        self.seat = self.seed % 2
         if hasattr(self.opponent, "reseed"):
             self.opponent.reseed(self.seed + 1)
         while obs.player != self.seat:                 # the opponent may move first
