@@ -853,3 +853,7 @@ de asiento de R7). Un umbral de criterio nunca se edita aquí: solo Christian lo
   (agota su mazo un turno antes, R6). El IC excluye 0,5; el test fija el signo (`hi < 0,5`).
 - 2026-09-29 · T12 · Habilidad: `HeuristicCartas` vs `RandomPolicy`, mazos espejo `aggro`, n = 1000 (500 por asiento):
   tasa de victoria 0,964 (IC 95 % [0,951; 0,974]); umbral LB ≥ 0,80 superado sin ajustes.
+- 2026-09-29 · T19 · Notebook 04: presupuesto de entrenamiento **200 000 episodios** (no 300 000; ≈ 105 s de entrenamiento principal,
+  ≈ 3,5 min de notebook completo), α = 0,1 constante, ε decreciente 0,3 → 0,02. Calibración: con α = 0,1 la diferencia pareada (n = 2000)
+  aprendida − óptima fue −0,041 [LB −0,078] (semilla 0) y −0,102 [LB −0,158] (semilla 1), umbral −0,210; con α = 0,05 la semilla 1 dio
+  LB −0,323 (no pasa), por eso α = 0,1. La política greedy queda a ≤ 5 % de V* desde ≈ 10 000 episodios (V* = −4,2049).
