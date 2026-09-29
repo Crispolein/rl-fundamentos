@@ -94,3 +94,67 @@ def test_elo_exact_on_a_consistent_matrix():
     m = np.array([[np.nan if i == j else p(r_true[i] - r_true[j]) for j in range(3)] for i in range(3)])
     r = elo_ratings(m, 1000)
     assert np.allclose(r, r_true, atol=1e-3)
+
+
+# ---- T32: league, counter matrix, maximin -------------------------------------------------------
+from rlf.eval.arena import CounterMatrix, League, counter_matrix, select_maximin  # noqa: E402
+
+
+def test_league_balanced_by_archetype():
+    lg = League()
+    for i in range(5):
+        lg.add(f"a{i}", Fixed(0), "A")
+    lg.add("b0", Fixed(1), "B")
+    lg.add("c0", Fixed(2), "C")
+    rng = np.random.default_rng(0)
+    names = [lg.sample(rng) for _ in range(30_000)]
+    arch = {n: lg.entries[n][1] for n in lg.entries}
+    freq = {a: np.mean([arch[n] == a for n in names]) for a in "ABC"}
+    assert all(abs(f - 1 / 3) <= 0.02 for f in freq.values()), freq
+    # inside an archetype the entries are uniform
+    a_names = [n for n in names if arch[n] == "A"]
+    for i in range(5):
+        assert abs(np.mean([n == f"a{i}" for n in a_names]) - 0.2) < 0.02
+
+
+def test_league_rejects_duplicates_and_empty_sampling():
+    lg = League()
+    with pytest.raises(ValueError):
+        lg.sample(np.random.default_rng(0))
+    lg.add("x", Fixed(0), "A")
+    with pytest.raises(ValueError):
+        lg.add("x", Fixed(1), "A")
+
+
+def test_select_maximin():
+    m = np.array([[np.nan, 0.9, 0.2],
+                  [0.1, np.nan, 0.6],
+                  [0.8, 0.4, np.nan]])
+    assert select_maximin(m) == 2                       # worst cases 0.2, 0.1, 0.4
+    assert select_maximin(np.array([[np.nan, 0.5], [0.5, np.nan]])) == 0
+
+
+def test_counter_matrix_wilson_cells_and_determinism():
+    make = lambda: ToyDuel()
+    ent = lambda: {"a": Fixed(0), "b": Fixed(1), "c": Fixed(2)}
+    c1 = counter_matrix(make, ent(), 200, n_envs=20)
+    c2 = counter_matrix(make, ent(), 200, n_envs=20)
+    assert isinstance(c1, CounterMatrix) and c1.names == ["a", "b", "c"]
+    assert np.array_equal(c1.rate, c2.rate, equal_nan=True) and np.array_equal(c1.lo, c2.lo, equal_nan=True)
+    off = ~np.eye(3, dtype=bool)
+    assert (c1.lo[off] <= c1.rate[off]).all() and (c1.rate[off] <= c1.hi[off]).all()
+    assert np.isnan(np.diag(c1.rate)).all()
+    assert c1.excludes_half().sum() >= 2                 # a-c and b-c differ clearly from 0.5 in this toy (both directions)
+
+
+def test_play_games_per_seat_env_factories():
+    hi, lo = (lambda: ToyDuel(seat_bias=8.0)), (lambda: ToyDuel(seat_bias=-8.0))
+    r = play_games(hi, Fixed(1), Fixed(1), 400, n_envs=20, make_env_seat1=lo)
+    assert r.wins_a == 400                               # A sits at seat 0 in `hi` envs and at seat 1 in `lo` envs
+
+
+def test_elo_of_rock_paper_scissors_is_flat():
+    m = np.array([[np.nan, 0.75, 0.25], [0.25, np.nan, 0.75], [0.75, 0.25, np.nan]])
+    r = elo_ratings(m, 1000)
+    assert r.max() - r.min() <= 20
+    assert (np.nanmax(m, axis=1) >= 0.70).all()
