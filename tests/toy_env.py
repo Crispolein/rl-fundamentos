@@ -78,3 +78,57 @@ class ToyEnv:
 
     def state_key(self) -> tuple:
         return (self.t, self.total)
+
+
+class ToyDuel:
+    """Two players, one decision each (3 options = skill levels 1000/1100/1200).
+
+    Player 0 wins with probability sigmoid_elo(level0 - level1) + a seat bias on the logit scale.
+    Used to test the arena and Elo with known true ratings.
+    """
+
+    LEVELS = np.array([1000.0, 1100.0, 1200.0])
+
+    def __init__(self, seat_bias: float = 0.0):
+        self.seat_bias = seat_bias
+        self.spec = EnvSpec(name="toyduel", n_players=2, state_dim=2, option_dim=3, entity_dim=2,
+                            max_options=3, max_entities=2, n_actions=3, max_steps=2)
+        self.seed = None
+        self._done = True
+
+    def reset(self, seed: int | None = None) -> Obs:
+        if seed is None:
+            seed = int(np.random.SeedSequence().generate_state(1)[0] % 10_000_000)
+        self.seed = seed
+        self.rng = np.random.default_rng(seed)
+        self.t = 0
+        self.choices = []
+        self._done = False
+        return self._obs()
+
+    def _obs(self) -> Obs:
+        n = 0 if self._done else 3
+        return Obs(state=np.array([self.t, 0.0], np.float32), options=np.eye(3, dtype=np.float32)[:n],
+                   option_ids=np.arange(n, dtype=np.int64), option_refs=-np.ones((n, 2), np.int64),
+                   entities=np.zeros((2, 2), np.float32), entity_mask=np.zeros(2, bool),
+                   player=0 if self._done else self.t)
+
+    def step(self, choice: int) -> Step:
+        if self._done:
+            raise RuntimeError("step() after done")
+        if not 0 <= choice < 3:
+            raise IndexError(choice)
+        self.choices.append(choice)
+        self.t += 1
+        rewards = np.zeros(2)
+        if self.t == 2:
+            self._done = True
+            diff = self.LEVELS[self.choices[0]] - self.LEVELS[self.choices[1]]
+            logit = diff * np.log(10) / 400 + self.seat_bias
+            p0 = 1 / (1 + np.exp(-logit))
+            win0 = self.rng.random() < p0
+            rewards = np.array([1.0, -1.0]) if win0 else np.array([-1.0, 1.0])
+        return Step(obs=self._obs(), rewards=rewards, done=self._done, info={})
+
+    def state_key(self) -> tuple:
+        return (self.t, tuple(self.choices))
