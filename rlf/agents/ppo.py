@@ -150,3 +150,127 @@ class PPO:
             info["steps"] = (len(self.history) + 1) * steps_per_iter
             self.history.append(info)
         return self.history
+
+
+class SelfPlay:
+    """PPO self-play for two-player envs: the same network controls both seats.
+
+    Each game is either pure self-play (both seats use the live network and both streams of decisions are trained on)
+    or live-network-vs-snapshot (the opponent seat uses a network sampled from the pool of recent snapshots; only the
+    live seat is trained on). Rewards are the terminal +1/0/-1 of each player, assigned to the last decision of that
+    player's stream; GAE runs per (game, player) stream.
+    """
+
+    def __init__(self, net, cfg: PPOConfig, make_env, n_envs: int = 64, pool_size: int = 4, snapshot_every: int = 4,
+                 p_self: float = 0.5, seed: int = 0):
+        import copy
+        self._copy = copy
+        self.net, self.cfg = net, cfg
+        self.ppo = PPO(net, cfg, seed)
+        self.vec = VecEnv(make_env, n_envs, seed=seed)
+        assert self.vec.spec.n_players == 2
+        self.device = self.ppo.device
+        self.pool: list = []
+        self.pool_size, self.snapshot_every, self.p_self = pool_size, snapshot_every, p_self
+        self.rng = np.random.default_rng(seed)
+        self.gen = torch.Generator(device="cpu")
+        self.gen.manual_seed(seed)
+        B = n_envs
+        self.obs = self.vec.reset()
+        self.mode = np.zeros(B, int)                 # -1 = pure self-play, k >= 0 = snapshot k
+        self.seat = np.zeros(B, int)                 # live seat when playing a snapshot
+        for b in range(B):
+            self._new_game(b)
+        self.streams: dict = {}
+        self.history: list = []
+        self.games_played = 0
+        self.iteration = 0
+
+    def _new_game(self, b: int) -> None:
+        if self.pool and self.rng.random() >= self.p_self:
+            self.mode[b] = int(self.rng.integers(len(self.pool)))
+        else:
+            self.mode[b] = -1
+        self.seat[b] = int(self.rng.integers(2))
+
+    @torch.no_grad()
+    def _sample(self, net, obs_sub: BatchObs):
+        t = to_torch(obs_sub, self.device)
+        logits, value = net(t)
+        probs = torch.softmax(logits, -1)
+        a = torch.multinomial(probs.cpu(), 1, generator=self.gen).squeeze(1).to(self.device)
+        logp = torch.log_softmax(logits, -1).gather(1, a[:, None]).squeeze(1)
+        return a.cpu().numpy().astype(np.int64), logp.cpu().numpy(), value.cpu().numpy()
+
+    def collect(self, n_games: int) -> dict:
+        """Play until `n_games` more games finish; return a flat batch of trainable decisions ([N, 1, ...] arrays)."""
+        B = self.vec.n_envs
+        finished: list = []
+        n_done = 0
+        while n_done < n_games:
+            obs = self.obs
+            player = obs.player
+            live = (self.mode == -1) | (player == self.seat)
+            actions = np.zeros(B, np.int64)
+            if live.any():
+                idx = np.flatnonzero(live)
+                a, logp, val = self._sample(self.net, obs.select(idx))
+                actions[idx] = a
+                for j, b in enumerate(idx):
+                    s = self.streams.setdefault((b, int(player[b])), {"rows": [], "a": [], "logp": [], "v": []})
+                    s["rows"].append({f: getattr(obs, f)[b] for f in _BATCH_FIELDS})
+                    s["a"].append(a[j]); s["logp"].append(logp[j]); s["v"].append(val[j])
+            for k in np.unique(self.mode[~live]):
+                idx = np.flatnonzero(~live & (self.mode == k))
+                actions[idx] = self._sample(self.pool[k], obs.select(idx))[0]
+            st = self.vec.step(actions)
+            for b in np.flatnonzero(st.done):
+                for p in (0, 1):
+                    s = self.streams.pop((b, p), None)
+                    if s is not None:
+                        finished.append((s, float(st.rewards[b, p])))
+                self._new_game(b)
+                n_done += 1
+            self.obs = st.obs
+        self.games_played += n_done
+        return self._batch(finished)
+
+    def _batch(self, finished: list) -> dict:
+        cfg = self.cfg
+        rows, acts, logps, vals, advs, rets = [], [], [], [], [], []
+        for s, final_reward in finished:
+            T = len(s["a"])
+            r = np.zeros((T, 1)); r[-1, 0] = final_reward * cfg.reward_scale
+            d = np.zeros((T, 1), bool); d[-1, 0] = True
+            v = np.array(s["v"])[:, None]
+            adv, ret = compute_gae(r, v, d, np.zeros(1), cfg.gamma, cfg.lam)
+            rows += s["rows"]; acts += s["a"]; logps += s["logp"]; vals += list(v[:, 0])
+            advs += list(adv[:, 0]); rets += list(ret[:, 0])
+        obs = {f: np.stack([row[f] for row in rows])[:, None] for f in _BATCH_FIELDS}
+        return {"obs": obs, "actions": np.array(acts)[:, None], "logp": np.array(logps)[:, None],
+                "values": np.array(vals)[:, None], "advantages": np.array(advs)[:, None], "returns": np.array(rets)[:, None]}
+
+    def train(self, total_steps: int, games_per_iter: int = 64) -> list:
+        """Iterate collect + PPO update until at least `total_steps` trainable decisions were used."""
+        used = sum(h.get("decisions", 0) for h in self.history)
+        while used < total_steps:
+            batch = self.collect(games_per_iter)
+            info = self.ppo.update(batch)
+            info["decisions"] = int(batch["actions"].shape[0])
+            info["games"] = self.games_played
+            used += info["decisions"]
+            info["steps"] = used
+            self.iteration += 1
+            if self.iteration % self.snapshot_every == 0:
+                snap = self._copy.deepcopy(self.net).eval()
+                self.pool = (self.pool + [snap])[-self.pool_size:]
+            self.history.append(info)
+        return self.history
+
+
+def train_selfplay(net, cfg: PPOConfig, make_env, total_steps: int, n_envs: int = 64, pool_size: int = 4,
+                   snapshot_every: int = 4, p_self: float = 0.5, games_per_iter: int = 64, seed: int = 0) -> SelfPlay:
+    """Self-play PPO; returns the `SelfPlay` object (its `history` and snapshot `pool`)."""
+    sp = SelfPlay(net, cfg, make_env, n_envs, pool_size, snapshot_every, p_self, seed)
+    sp.train(total_steps, games_per_iter)
+    return sp

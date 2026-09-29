@@ -91,3 +91,50 @@ def test_ppo_learns_smoke():
     learned = evaluate_policy(make, ActorCriticPolicy(net, greedy=False), 1000)
     rand = evaluate_policy(make, RandomPolicy(0), 1000)
     assert paired_diff_ci(learned, rand).lo > 0
+
+
+# ---- T30: self-play -----------------------------------------------------------------------------
+from rlf.agents.ppo import SelfPlay, train_selfplay  # noqa: E402
+from rlf.envs.cartas import CartasEnv  # noqa: E402
+from rlf.eval.arena import play_games  # noqa: E402
+from rlf.nets.pointer import PointerActorCritic  # noqa: E402
+
+
+def test_selfplay_batch_is_consistent():
+    torch.manual_seed(0)
+    net = PointerActorCritic(CartasEnv().spec, d_model=32)
+    sp = SelfPlay(net, PPOConfig(gamma=1.0, lam=0.95), lambda: CartasEnv(), n_envs=8, seed=0)
+    b = sp.collect(8)
+    n = b["actions"].shape[0]
+    assert b["actions"].shape == (n, 1) and b["obs"]["state"].shape[:2] == (n, 1)
+    assert np.isfinite(b["advantages"]).all() and np.isfinite(b["returns"]).all()
+    assert (b["actions"][:, 0] < b["obs"]["option_mask"][:, 0].sum(-1)).all()          # legal indices only
+    # returns = advantages + values, and with gamma = lambda = 1 the return of every stream's first step is +-1
+    assert np.allclose(b["returns"], b["advantages"] + b["values"])
+
+
+def test_selfplay_terminal_rewards_are_opposite_in_pure_self_play():
+    torch.manual_seed(0)
+    net = PointerActorCritic(CartasEnv().spec, d_model=32)
+    sp = SelfPlay(net, PPOConfig(gamma=1.0, lam=1.0), lambda: CartasEnv(), n_envs=4, p_self=1.0, seed=1)
+    b = sp.collect(20)
+    # with lam = 1 and gamma = 1 each stream's return-to-go is its own final reward: every value is +1 or -1
+    assert np.isin(np.round(b["returns"][:, 0], 6), [-1.0, 1.0]).all()
+    assert abs(b["returns"].mean()) < 0.2                                                # zero-sum: both seats trained
+
+
+def test_selfplay_pool_keeps_recent_snapshots():
+    torch.manual_seed(0)
+    net = PointerActorCritic(CartasEnv().spec, d_model=32)
+    sp = SelfPlay(net, PPOConfig(), lambda: CartasEnv(), n_envs=8, pool_size=2, snapshot_every=1, seed=0)
+    sp.train(3000, games_per_iter=8)
+    assert 1 <= len(sp.pool) <= 2 and sp.games_played >= 8
+
+
+def test_selfplay_learns_to_beat_random():
+    torch.manual_seed(0)
+    net = PointerActorCritic(CartasEnv().spec, d_model=64)
+    sp = train_selfplay(net, PPOConfig(gamma=1.0, lam=0.95, lr=1e-3, epochs=4, minibatches=4), lambda: CartasEnv(),
+                        total_steps=60_000, n_envs=32, seed=0)
+    res = play_games(lambda: CartasEnv(), ActorCriticPolicy(net, greedy=True), RandomPolicy(0), 1000)
+    assert res.win_rate_a.lo > 0.6, res.win_rate_a
