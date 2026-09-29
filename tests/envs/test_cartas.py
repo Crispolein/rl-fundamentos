@@ -427,3 +427,17 @@ def test_R24_determinism_with_mulligans_and_random_decks():
         assert len(a) == len(b)
         assert np.array_equal(a[0], b[0]) and a[2] == b[2]
         assert all(np.array_equal(x[1], y[1]) and np.array_equal(x[2], y[2]) for x, y in zip(a[3:], b[3:]))
+
+
+# ---- T12: seat bias (R7) ----------------------------------------------------------------------
+from rlf.agents.baselines import RandomPolicy  # noqa: E402
+from rlf.eval.arena import play_games  # noqa: E402
+from rlf.eval.stats import proportion_ci  # noqa: E402
+
+
+def test_R7_seat_bias_excludes_one_half_with_random_play():
+    r = play_games(lambda: CartasEnv(), RandomPolicy(1), RandomPolicy(2), 5000)
+    est = proportion_ci(r.seat0_wins, r.n)
+    assert est.hi < 0.5 or est.lo > 0.5, est
+    # Measured sign (recorded in design.md section 10): seat 0 loses more often, it exhausts its deck first.
+    assert est.hi < 0.5

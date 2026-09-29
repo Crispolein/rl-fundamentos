@@ -848,3 +848,8 @@ de asiento de R7). Un umbral de criterio nunca se edita aquí: solo Christian lo
 - 2026-09-29 · T8 · D14 (ii) en "mediano" **sin ajuste** de `capacity`/`p_arrival`: mejor-en-retrospectiva − greedy
   = +19,995 (IC 95 % [17,79; 22,20], n = 1000); retorno medio de greedy −77,47. MDP exacto de "diminuto":
   2427 estados (91 terminales), 6020 transiciones no nulas (límite 200 000).
+- 2026-09-29 · T12 · Sesgo de asiento R7 (MiniCartas, mazos espejo `aggro`, política aleatoria en ambos asientos,
+  n = 5000): `P(gana el asiento 0)` = 0,397 (1987/5000; IC 95 % [0,384; 0,411]). **Signo: el asiento 0 pierde más**
+  (agota su mazo un turno antes, R6). El IC excluye 0,5; el test fija el signo (`hi < 0,5`).
+- 2026-09-29 · T12 · Habilidad: `HeuristicCartas` vs `RandomPolicy`, mazos espejo `aggro`, n = 1000 (500 por asiento):
+  tasa de victoria 0,964 (IC 95 % [0,951; 0,974]); umbral LB ≥ 0,80 superado sin ajustes.
