@@ -262,3 +262,168 @@ def test_R20_reward_zero_until_the_end():
                 assert sorted(r) == [-1.0, 1.0] and r[c.winner] == 1.0
                 break
             assert (r == 0).all()
+
+
+# ---- T11: environment with observation, canonical ids, rival_bounds, contract -----------------
+from rlf.envs.cartas import MAXC, CartasEnv, rival_bounds  # noqa: E402
+
+
+def play_random(env, n_steps, seed):
+    rng = np.random.default_rng(seed)
+    obs = env.reset(seed)
+    for _ in range(n_steps):
+        st = env.step(int(rng.integers(obs.n_options)))
+        if st.done:
+            return None
+        obs = st.obs
+    return obs
+
+
+def obs_equal(a, b):
+    return a.player == b.player and all(np.array_equal(getattr(a, f), getattr(b, f)) for f in
+            ("state", "options", "option_ids", "option_refs", "entities", "entity_mask"))
+
+
+def test_spec_and_state_key_not_implemented():
+    e = CartasEnv()
+    sp = e.spec
+    assert (sp.n_players, sp.state_dim, sp.option_dim, sp.entity_dim) == (2, 12, 19, 26)
+    assert (sp.max_options, sp.max_entities, sp.n_actions, sp.max_steps) == (13, 8, 19, 120)
+    e.reset(0)
+    with pytest.raises(NotImplementedError):
+        e.state_key()
+
+
+def test_R22_ids_and_option_features():
+    e = CartasEnv()
+    e.reset(0)
+    e.core.hands[0] = [0, 3, 4, 5, 6]
+    e.core.board[0] = [[0, 1, 0], [1, 5, 0], None]
+    e.core.phase, e.core.player = "MAIN", 0
+    obs = e._obs()
+    ids = obs.option_ids.tolist()
+    assert ids == [END_TURN, ATTACH + 0, ATTACH + 1, PLAY_CREATURE + 0, PLAY_CREATURE + 3, PLAY_DRAW, PLAY_HEAL + 0]
+    o = {i: obs.options[j] for j, i in enumerate(ids)}
+    assert o[END_TURN][0] == 1 and o[END_TURN][8:15].sum() == 0
+    assert o[ATTACH + 1][2] == 1 and o[ATTACH + 1][8 + 4] == 1 and o[ATTACH + 1][15 + 1] == 1
+    assert o[PLAY_CREATURE + 3][3] == 1 and o[PLAY_CREATURE + 3][8 + 3] == 1 and o[PLAY_CREATURE + 3][15:18].sum() == 0
+    assert o[PLAY_DRAW][4] == 1 and o[PLAY_DRAW][8 + 5] == 1
+    assert o[PLAY_HEAL][5] == 1 and o[PLAY_HEAL][8 + 6] == 1 and o[PLAY_HEAL][15] == 1
+    refs = {i: obs.option_refs[j].tolist() for j, i in enumerate(ids)}
+    assert refs[END_TURN] == [-1, -1] and refs[ATTACH + 1] == [1, -1] and refs[PLAY_HEAL] == [0, -1]
+    assert refs[PLAY_CREATURE + 3] == [-1, -1]
+    # ATTACK: active Lobo with 2 energies, dmg 3 -> feature 3/8; refs (0, 3)
+    e.core.board[0] = [[1, 5, 2], None, None]
+    obs = e._obs()
+    j = obs.option_ids.tolist().index(ATTACK)
+    assert obs.options[j][1] == 1 and obs.options[j][8 + 1] == 1 and obs.options[j][18] == pytest.approx(3 / 8)
+    assert obs.option_refs[j].tolist() == [0, 3]
+
+
+def test_promote_and_place_features():
+    e = CartasEnv()
+    obs = e.reset(3)
+    assert obs.state[8] == 1 and obs.player == 0                      # phase SETUP
+    assert (obs.options[:, 6] == 1).all() and (obs.option_ids >= 13).all()
+    e.core.phase, e.core.player = "PROMOTE", 1
+    e.core.board[1] = [None, [2, 8, 0], [3, 6, 0]]
+    obs = e._obs()
+    assert obs.player == 1 and obs.state[10] == 1
+    assert obs.option_ids.tolist() == [PROMOTE, PROMOTE + 1]
+    assert obs.options[0][7] == 1 and obs.options[0][8 + 2] == 1 and obs.options[0][15 + 1] == 1
+    assert obs.options[1][15 + 2] == 1
+    assert obs.option_refs.tolist() == [[1, -1], [2, -1]]
+
+
+def test_state_and_entities_encoding():
+    e = CartasEnv()
+    e.reset(0)
+    c = e.core
+    c.phase, c.player, c.attached = "MAIN", 1, True
+    c.hands = [[0, 0, 4], [1, 4, 4, 5]]
+    c.board = [[[0, 2, 1], None, None], [[1, 5, 2], [2, 8, 0], None]]
+    c.discard = [[6], [4, 4]]
+    c.decks = [[4] * 10, [4] * 8]
+    c.prizes = [[6] * 3, [6] * 2]
+    obs = e._obs()
+    assert obs.state.tolist() == pytest.approx([2 / 3, 1, 4 / 20, 3 / 20, 8 / 20, 10 / 20, 1, 0, 0, 1, 0, 0])
+    ent = obs.entities
+    assert obs.entity_mask.tolist() == [True, True, False, True, False, False, True, True]
+    assert ent[0][:3].tolist() == [1, 0, 0] and ent[0][3] == 1
+    # player 1 decides: "own" rows 0..2 are player 1's creatures
+    assert ent[0][4] == 1 and ent[0][5] == 1 and ent[0][6 + 1] == 1 and ent[0][10] == pytest.approx(5 / 8)
+    assert ent[0][11] == pytest.approx(2 / 3)
+    assert ent[1][6 + 2] == 1 and ent[1][5] == 0
+    assert ent[3][4] == 0 and ent[3][5] == 1 and ent[3][6 + 0] == 1 and ent[3][10] == pytest.approx(2 / 8)
+    assert (ent[2] == 0).all() and (ent[4] == 0).all()
+    assert ent[6][:3].tolist() == [0, 1, 0] and ent[7][:3].tolist() == [0, 0, 1]
+    # own hand counts / 8 (hand of player 1 = [1, 4, 4, 5])
+    assert ent[6][12:19].tolist() == pytest.approx(np.array([0, 1, 0, 0, 2, 1, 0]) / 8)
+    # rival bounds: lower = board creature 0 + 1 energy + discard Potion
+    lower, upper = rival_bounds(e, 1)
+    assert lower.tolist() == [1, 0, 0, 0, 1, 0, 1]
+    assert ent[7][12:19].tolist() == pytest.approx(lower / 8) and ent[7][19:26].tolist() == pytest.approx(upper / 8)
+
+
+def test_R21_no_information_leak():
+    for seed in range(40):
+        e = CartasEnv()
+        obs = play_random(e, 12 + seed % 7, seed)
+        if obs is None or obs.n_options == 0:
+            continue
+        p = e.core.player
+        q = 1 - p
+        before = e._obs()
+        c = e.core
+        c.hands[q] = [4] * len(c.hands[q])
+        c.decks[q] = [6] * len(c.decks[q])
+        c.prizes[q] = [5] * len(c.prizes[q])
+        assert obs_equal(before, e._obs())
+
+
+def test_R21_own_hand_changes_observation():
+    e = CartasEnv()
+    obs = play_random(e, 14, 5)
+    before = e._obs()
+    e.core.hands[e.core.player] = [3, 3, 3]
+    assert not np.array_equal(before.entities, e._obs().entities)
+
+
+def test_R23_bounds_never_violated_1000_games():
+    rng = np.random.default_rng(0)
+    e = CartasEnv(CartasConfig("random", "random"))
+    informative = 0
+    for seed in range(1000):
+        obs = e.reset(seed)
+        done = False
+        while not done:
+            for pl in (0, 1):
+                lo, up = rival_bounds(e, pl)
+                total = np.array(ARCHETYPES[e.core.deck_names[1 - pl]])
+                assert (lo <= total).all() and ((total - lo) <= up).all()
+                assert lo.dtype == np.int64 and up.dtype == np.int64 and (up >= 0).all()
+            informative += 1
+            st = e.step(int(rng.integers(obs.n_options)))
+            obs, done = st.obs, st.done
+    assert informative > 1000
+    lo, up = rival_bounds(e, 0)
+    assert (up == np.maximum(0, MAXC - lo)).all()
+
+
+def test_R24_determinism_with_mulligans_and_random_decks():
+    def run(seed):
+        e = CartasEnv(CartasConfig("random", "tank"))
+        rng = np.random.default_rng(3)
+        obs = e.reset(seed)
+        out = [obs.state.copy(), obs.entities.copy(), e.core.mulligans[:]]
+        while True:
+            st = e.step(int(rng.integers(obs.n_options)))
+            out.append((st.rewards.copy(), st.obs.state.copy(), st.obs.option_ids.copy()))
+            obs = st.obs
+            if st.done:
+                return out
+    for seed in (1, 2, 3):
+        a, b = run(seed), run(seed)
+        assert len(a) == len(b)
+        assert np.array_equal(a[0], b[0]) and a[2] == b[2]
+        assert all(np.array_equal(x[1], y[1]) and np.array_equal(x[2], y[2]) for x, y in zip(a[3:], b[3:]))

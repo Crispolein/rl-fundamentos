@@ -8,6 +8,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from rlf.core import EnvSpec, Obs, Step
+
 N_TYPES = 7
 ENERGY, STUDY, POTION = 4, 5, 6
 CARDS_HP = np.array([3, 5, 8, 6, 0, 0, 0])
@@ -178,3 +180,127 @@ class CartasCore:
             self._win(p)
         else:                                                       # R17
             self.phase, self.player = "PROMOTE", q
+
+
+def _revealed(core: CartasCore, p: int) -> np.ndarray:
+    """Copies per card type of player p that everybody has seen: board creatures, attached energies, discard."""
+    cnt = np.zeros(N_TYPES, np.int64)
+    for slot in core.board[p]:
+        if slot is not None:
+            cnt[slot[0]] += 1
+            cnt[ENERGY] += slot[2]
+    for card in core.discard[p]:
+        cnt[card] += 1
+    return cnt
+
+
+def rival_bounds(env, player: int) -> tuple[np.ndarray, np.ndarray]:
+    """R23: (lower, upper) int64[7] for the rival of `player`.
+
+    lower[t] = copies of type t the rival has revealed; upper[t] = max(0, MAXC[t] - lower[t]) is an upper
+    bound on the copies not yet revealed (in hand, deck or prizes)."""
+    core = getattr(env, "core", env)
+    lower = _revealed(core, 1 - player)
+    return lower, np.maximum(0, MAXC - lower)
+
+
+class CartasEnv:
+    """MiniCartas with the option-list interface (`rlf.core.Env`)."""
+
+    def __init__(self, cfg: CartasConfig | None = None):
+        self.cfg = cfg or CartasConfig()
+        self.core = CartasCore(self.cfg)
+        self.spec = EnvSpec(name="cartas", n_players=2, state_dim=12, option_dim=19, entity_dim=26,
+                            max_options=13, max_entities=8, n_actions=N_ACTIONS, max_steps=120)
+        self.seed = None
+        self._actions: list[int] = []
+
+    def reset(self, seed: int | None = None):
+        self.core.reset(seed)
+        self.seed = self.core.seed
+        return self._obs()
+
+    def step(self, choice: int):
+        if self.core.done:
+            raise RuntimeError("step after done")
+        if not 0 <= choice < len(self._actions):
+            raise IndexError(choice)
+        rewards, done, info = self.core.step_action(self._actions[choice])
+        if done:
+            info = dict(info, winner=self.core.winner)
+        return Step(self._obs(), rewards, done, info)
+
+    def state_key(self) -> tuple:
+        raise NotImplementedError("MiniCartas is not tabular")
+
+    # ---- observation -------------------------------------------------------------------------
+    def _unseen_own(self, p: int) -> np.ndarray:
+        """Own deck + prizes: the deck list minus every card already seen (hand, board, attached, discard)."""
+        core = self.core
+        cnt = np.array(ARCHETYPES[core.deck_names[p]], np.int64) - _revealed(core, p)
+        for card in core.hands[p]:
+            cnt[card] -= 1
+        return cnt
+
+    def _obs(self):
+        core = self.core
+        p = core.player if not core.done else 0
+        q = 1 - p
+        acts = [] if core.done else core.legal_actions()
+        self._actions = acts
+        board = core.board
+        hand = np.bincount(core.hands[p], minlength=N_TYPES)
+        main = core.phase == "MAIN"
+        state = np.array([len(core.prizes[p]) / 3, len(core.prizes[q]) / 3, len(core.hands[p]) / 20,
+                          len(core.hands[q]) / 20, len(core.decks[p]) / 20, len(core.decks[q]) / 20,
+                          float(core.attached and main), float(core.support and main),
+                          core.phase == "SETUP", main, core.phase == "PROMOTE", p == 0], np.float32)
+        ent = np.zeros((8, 26), np.float32)
+        mask = np.zeros(8, bool)
+        for side, who in ((0, p), (3, q)):
+            for j in range(3):
+                slot = board[who][j]
+                if slot is None:
+                    continue
+                row = ent[side + j]
+                row[0], row[3], row[4], row[5] = 1, 1, who == p, j == 0
+                row[6 + slot[0]] = 1
+                row[10], row[11] = slot[1] / 8, slot[2] / 3
+                mask[side + j] = True
+        lower, upper = rival_bounds(self, p)
+        ent[6, 1], ent[6, 3], ent[6, 4] = 1, 1, 1
+        ent[6, 12:19], ent[6, 19:26] = hand / 8, self._unseen_own(p) / 8
+        ent[7, 2], ent[7, 3] = 1, 1
+        ent[7, 12:19], ent[7, 19:26] = lower / 8, upper / 8
+        mask[6] = mask[7] = True
+        n = len(acts)
+        opts = np.zeros((n, 19), np.float32)
+        refs = -np.ones((n, 2), np.int64)
+        for i, a in enumerate(acts):
+            o = opts[i]
+            if a == END_TURN:
+                o[0] = 1
+            elif a == ATTACK:
+                t = board[p][0][0]
+                o[1], o[8 + t], o[18] = 1, 1, CARDS_DMG[t] / 8
+                refs[i] = (0, 3)
+            elif ATTACH <= a < ATTACH + 3:
+                j = a - ATTACH
+                o[2], o[8 + ENERGY], o[15 + j] = 1, 1, 1
+                refs[i] = (j, -1)
+            elif PLAY_CREATURE <= a < PLAY_CREATURE + 4:
+                o[3], o[8 + a - PLAY_CREATURE] = 1, 1
+            elif a == PLAY_DRAW:
+                o[4], o[8 + STUDY] = 1, 1
+            elif PLAY_HEAL <= a < PLAY_HEAL + 3:
+                j = a - PLAY_HEAL
+                o[5], o[8 + POTION], o[15 + j] = 1, 1, 1
+                refs[i] = (j, -1)
+            elif PLACE_ACTIVE <= a < PLACE_ACTIVE + 4:
+                o[6], o[8 + a - PLACE_ACTIVE] = 1, 1
+            else:                                                   # PROMOTE
+                j = a - PROMOTE
+                o[7], o[8 + board[p][1 + j][0]], o[15 + 1 + j] = 1, 1, 1
+                refs[i] = (1 + j, -1)
+        return Obs(state=state, options=opts, option_ids=np.array(acts, np.int64), option_refs=refs,
+                   entities=ent, entity_mask=mask, player=p)
