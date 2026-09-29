@@ -857,3 +857,6 @@ de asiento de R7). Un umbral de criterio nunca se edita aquí: solo Christian lo
   ≈ 3,5 min de notebook completo), α = 0,1 constante, ε decreciente 0,3 → 0,02. Calibración: con α = 0,1 la diferencia pareada (n = 2000)
   aprendida − óptima fue −0,041 [LB −0,078] (semilla 0) y −0,102 [LB −0,158] (semilla 1), umbral −0,210; con α = 0,05 la semilla 1 dio
   LB −0,323 (no pasa), por eso α = 0,1. La política greedy queda a ≤ 5 % de V* desde ≈ 10 000 episodios (V* = −4,2049).
+- 2026-09-29 · T21 · Notebook 05: DQN "diminuto" **80 000 pasos** y "mediano" **100 000 pasos** (8 entornos en paralelo, train_ratio 0,25, red 64×64).
+  Calibración en "diminuto" (n = 1000, DQN − óptima, LB frente a umbral −0,420): con 40 000 pasos la semilla 1 dio LB −0,426 (no pasa);
+  con 80 000 pasos las semillas 0/1/2 dieron LB −0,070/−0,070/−0,080. "Mediano": DQN −74,6, aleatorio −118,2, greedy −77,5 (s(0,5): +23,3 [20,9; 25,7]).
