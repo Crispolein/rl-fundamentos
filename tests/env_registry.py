@@ -18,4 +18,6 @@ ENVS = {
     "cartas": lambda: CartasEnv(),
     "cartas_random": lambda: CartasEnv(CartasConfig("random", "random")),
     "cartas_vs_random": lambda: VsOpponent(lambda: CartasEnv(), RandomPolicy(0)),
+    "despacho_urgente_bug": lambda: DespachoEnv.from_profile("urgente", bug="late_at_dispatch"),
+    "despacho_pesado": lambda: DespachoEnv.from_profile("pesado"),
 }

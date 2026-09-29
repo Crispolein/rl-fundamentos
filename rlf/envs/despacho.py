@@ -25,6 +25,7 @@ class DespachoConfig:
     slack_range: tuple
     dist_w: float = 1.0
     late_w: float = 2.0
+    bug: str | None = None   # simulator error: "late_at_dispatch" measures lateness at dispatch time, not at arrival
 
     @property
     def U(self) -> float:
@@ -43,6 +44,11 @@ class DespachoConfig:
     def from_size(cls, name: str) -> "DespachoConfig":
         return cls(**_SIZES[name])
 
+    @classmethod
+    def from_profile(cls, name: str, bug: str | None = None) -> "DespachoConfig":
+        """A demand profile: overrides on top of "mediano"."""
+        return replace(cls.from_size("mediano"), bug=bug, **PROFILES[name])
+
 
 _SIZES = {
     "diminuto": dict(width=3, height=1, n_trucks=2, capacity=2, max_pending=1, horizon=6,
@@ -51,6 +57,13 @@ _SIZES = {
                     p_arrival=0.5, qty_range=(1, 3), slack_range=(4, 8)),
     "grande": dict(width=8, height=8, n_trucks=6, capacity=12, max_pending=12, horizon=60,
                    p_arrival=0.8, qty_range=(1, 3), slack_range=(4, 10)),
+}
+
+
+PROFILES = {
+    "urgente": dict(p_arrival=0.6, slack_range=(2, 4)),
+    "holgado": dict(p_arrival=0.25, slack_range=(5, 9)),
+    "pesado": dict(qty_range=(2, 3), capacity=15),
 }
 
 
@@ -142,7 +155,8 @@ class DespachoCore:
         return abs(tr[0] - p[0]) + abs(tr[1] - p[1])
 
     def lateness(self, s: int, k: int) -> int:
-        return min(self.cfg.horizon, max(0, self.t + self.dist(s, k) - self.pend[s][3]))
+        arrival = self.t if self.cfg.bug == "late_at_dispatch" else self.t + self.dist(s, k)   # the bug ignores travel time
+        return min(self.cfg.horizon, max(0, arrival - self.pend[s][3]))
 
     def step_action(self, a: int) -> tuple[float, bool, dict]:
         if self.done:
@@ -203,6 +217,10 @@ class DespachoEnv:
     @classmethod
     def from_size(cls, name: str) -> "DespachoEnv":
         return cls(DespachoConfig.from_size(name))
+
+    @classmethod
+    def from_profile(cls, name: str, bug: str | None = None) -> "DespachoEnv":
+        return cls(DespachoConfig.from_profile(name, bug))
 
     def reset(self, seed: int | None = None):
         self.core.reset(seed)

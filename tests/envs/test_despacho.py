@@ -402,3 +402,64 @@ def test_D14_ii_headroom_over_greedy_mediano():
     for j in range(1, 20):
         best = np.maximum(best, evaluate_policy(make, NoisyGreedy(0.2, j), n))
     assert passes_lower(paired_diff_ci(best, greedy), 1e-12)
+
+
+# ---- T34: demand profiles and the simulator bug --------------------------------------------------
+from rlf.envs.despacho import PROFILES  # noqa: E402
+
+
+def test_profiles_are_overrides_of_mediano():
+    assert set(PROFILES) == {"urgente", "holgado", "pesado"}
+    base = DespachoConfig.from_size("mediano")
+    urg, hol, pes = (DespachoConfig.from_profile(n) for n in ("urgente", "holgado", "pesado"))
+    assert (urg.p_arrival, urg.slack_range) == (0.6, (2, 4))
+    assert (hol.p_arrival, hol.slack_range) == (0.25, (5, 9))
+    assert (pes.qty_range, pes.capacity) == ((2, 3), 15)
+    for c in (urg, hol, pes):
+        assert (c.width, c.height, c.n_trucks, c.max_pending, c.horizon) == (5, 5, 3, 4, 30)
+        assert c.U == base.U and c.bug is None
+    assert (pes.p_arrival, pes.slack_range) == (base.p_arrival, base.slack_range)
+    assert (urg.qty_range, urg.capacity) == (base.qty_range, base.capacity)
+    with pytest.raises(KeyError):
+        DespachoConfig.from_profile("otro")
+
+
+def test_profile_env_spec_matches_mediano():
+    assert DespachoEnv.from_profile("urgente").spec == DespachoEnv.from_size("mediano").spec
+
+
+def test_bug_late_at_dispatch_changes_only_the_lateness_reward():
+    cfg = replace(DespachoConfig.from_size("diminuto"), p_arrival=0.0)
+    good, bad = DespachoCore(cfg), DespachoCore(replace(cfg, bug="late_at_dispatch"))
+    key = (0, ((2, 0, 1, 1),), ((0, 0, 2, 0), (0, 0, 2, 0)))            # d = 2, due in 1 tick
+    for c in (good, bad):
+        c.reset(0)
+        c.set_state(key)
+    assert good.step_action(0)[0] == -2 - 2 * 1                          # lateness measured at arrival: t + d - due = 1
+    assert bad.step_action(0)[0] == -2                                   # measured at dispatch: max(0, t - due) = 0
+    for c in (good, bad):
+        c.set_state((3, ((2, 0, 1, -1),), ((0, 0, 2, 0), (0, 0, 2, 0))))   # already late at dispatch (t - due = 1)
+    assert good.step_action(0)[0] == -2 - 2 * 3                          # t + d - due = 3 + 2 - 2 = 3
+    assert bad.step_action(0)[0] == -2 - 2 * 1
+
+
+def test_bug_never_reduces_reward_and_keeps_the_dynamics():
+    good = DespachoEnv.from_profile("urgente")
+    bad = DespachoEnv.from_profile("urgente", bug="late_at_dispatch")
+    strictly = 0
+    for seed in range(200):
+        rg, rb = np.random.default_rng(seed), np.random.default_rng(seed)
+        og, ob = good.reset(seed), bad.reset(seed)
+        tot_g = tot_b = 0.0
+        done = False
+        while not done:
+            assert og.n_options == ob.n_options and np.array_equal(og.option_ids, ob.option_ids)
+            sg, sb = good.step(int(rg.integers(og.n_options))), bad.step(int(rb.integers(ob.n_options)))
+            assert np.array_equal(sg.obs.state, sb.obs.state)              # same dynamics: only the reward differs
+            tot_g += sg.rewards[0]; tot_b += sb.rewards[0]
+            og, ob, done = sg.obs, sb.obs, sg.done
+        assert tot_b >= tot_g - 1e-9
+        strictly += tot_b > tot_g + 1e-9
+        b = sb.info["cost_breakdown"]
+        assert tot_b == pytest.approx(-(b["distance"] + b["lateness"] + b["unserved"]))
+    assert strictly > 100
