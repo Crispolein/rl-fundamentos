@@ -865,3 +865,8 @@ de asiento de R7). Un umbral de criterio nunca se edita aquí: solo Christian lo
   Calibración: sin normalizar ventajas, con lr 3e-3/1e-3 y 32–128 episodios por actualización, la política quedó estancada en ≈ −97 (evaluada greedy: LB de s(0,5) entre −4,3 y +0,8,
   no robusto); evaluada **muestreando** (que es lo que REINFORCE optimiza) y con ventajas normalizadas el LB de la media de d_i fue +4,3 (semilla 0) y +3,0 (semilla 1) a las 800
   actualizaciones. Referencias: aleatorio −118,2, greedy −77,5, mitad de camino −97,8. Varianza total del gradiente (política final): b=0 225,2; b=media 116,4; b=V(s) 89,8 (cociente 0,399).
+- 2026-09-29 · T25 · Notebook 07: PPO en "mediano" con **1 000 000 de pasos** (no 300 000), 64 entornos, rollouts de 64, **10 épocas × 8 minibatches**, γ = 0,97, λ = 0,9,
+  lr 1e-3, `MLPActorCritic` (128,128) compartido, `reward_scale` 1/68; evaluación con la política **greedy (argmax)**. Entrenamiento ≈ 115 s (≈ 8 500 pasos/s incluyendo actualizaciones); notebook ≈ 3,3 min.
+  Calibración (todas con MLP sobre ids, n = 1000, referencia greedy −77,47): γ = 1, λ = 0,95, 4 épocas, lr 3e-4 con la política **muestreada** quedó estancada en ≈ −91 hasta 1 M pasos
+  (LB de PPO − greedy ≈ −16) y llegó a ≈ −76 recién a los 6 M pasos (≈ 7 min); con 10 épocas y lr 1e-3, 2 M pasos dieron −74,5 (LB +0,6); con γ = 0,97 y λ = 0,9 bastan 500 000 pasos.
+  Muestreada, esa misma política rinde −75,1 (LB −0,2), por eso se evalúa greedy (−72,9, LB +2,1 a 500 000 pasos). Resultado final semilla 0: −72,33, PPO − greedy = +5,14 [2,70; 7,58].
