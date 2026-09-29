@@ -874,3 +874,6 @@ de asiento de R7). Un umbral de criterio nunca se edita aquí: solo Christian lo
   PPO γ = 0,97/λ = 0,9/10 épocas en despacho y γ = 1/λ = 0,95/6 épocas en MiniCartas; evaluación greedy; notebook ≈ 4,6 min. Medido (semilla 0): mediano pointer −69,0 vs greedy −77,5 (LB de la diferencia +5,93,
   umbral −1,55); grande sin reentrenar −1567,5 (aleatorio −1763,0, greedy −1686,3); MiniCartas 0,991 [0,983; 0,995] (umbral LB ≥ 0,70). A 150 000 pasos el pointer y el MLP quedan parejos (−76,4 vs −76,3);
   a 400 000 el pointer gana por +6,5 [4,4; 8,6]. Prototipo previo: MiniCartas ya llegaba a 0,992 a los 200 000 pasos.
+- 2026-09-29 · T29 · Notebook 09: `MiniPTCGNet` con PPO **100 000 pasos** en "mediano" (≈ 50 s) y **100 000 pasos** en MiniCartas contra el aleatorio (≈ 62 s); lr 5e-4, **3 épocas × 4 minibatches** (con 10 épocas el
+  Transformer cuesta ≈ 160 s por 100 000 pasos y en una corrida de 300 000 pasos hubo un colapso transitorio a −106 a los 200 000); notebook ≈ 2,6 min. Medido (semilla 0): mediano −74,3 (s(0,5): +23,5 [21,5; 25,6]),
+  grande sin reentrenar +124,8 sobre el aleatorio, MiniCartas 0,991 [0,983; 0,995] (umbral LB ≥ 0,80); parámetros 76 673 / 79 361; invarianza a permutaciones 4,3e-6. Pasada de 64 observaciones: MLP 0,15 ms, pointer 0,54 ms, MiniPTCGNet 3,22 ms.
