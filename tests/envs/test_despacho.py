@@ -463,3 +463,40 @@ def test_bug_never_reduces_reward_and_keeps_the_dynamics():
         b = sb.info["cost_breakdown"]
         assert tot_b == pytest.approx(-(b["distance"] + b["lateness"] + b["unserved"]))
     assert strictly > 100
+
+
+# ---- T35: coarser simulator bug, no lateness cost at all -------------------------------------------
+def test_bug_no_late_cost_charges_no_lateness_at_all():
+    cfg = replace(DespachoConfig.from_size("diminuto"), p_arrival=0.0)
+    good, bad = DespachoCore(cfg), DespachoCore(replace(cfg, bug="no_late_cost"))
+    for c in (good, bad):
+        c.reset(0)
+        c.set_state((3, ((2, 0, 1, -1),), ((0, 0, 2, 0), (0, 0, 2, 0))))   # d = 2, already 1 tick late
+    assert good.step_action(0)[0] == -2 - 2 * 3
+    assert bad.step_action(0)[0] == -2                                      # only distance is charged
+    assert bad.cost_breakdown()["lateness"] == 0
+
+
+def test_bug_no_late_cost_keeps_dynamics_and_never_rewards_less():
+    good = DespachoEnv.from_profile("urgente")
+    bad = DespachoEnv.from_profile("urgente", bug="no_late_cost")
+    strictly = 0
+    for seed in range(100):
+        rg, rb = np.random.default_rng(seed), np.random.default_rng(seed)
+        og, ob = good.reset(seed), bad.reset(seed)
+        tot_g = tot_b = 0.0
+        done = False
+        while not done:
+            sg, sb = good.step(int(rg.integers(og.n_options))), bad.step(int(rb.integers(ob.n_options)))
+            assert np.array_equal(sg.obs.state, sb.obs.state)
+            tot_g += sg.rewards[0]; tot_b += sb.rewards[0]
+            og, ob, done = sg.obs, sb.obs, sg.done
+        assert tot_b >= tot_g - 1e-9
+        strictly += tot_b > tot_g + 1e-9
+        assert sb.info["cost_breakdown"]["lateness"] == 0
+    assert strictly > 50
+
+
+def test_unknown_bug_is_rejected():
+    with pytest.raises(ValueError):
+        DespachoConfig.from_profile("urgente", bug="otro")

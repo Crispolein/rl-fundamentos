@@ -25,7 +25,12 @@ class DespachoConfig:
     slack_range: tuple
     dist_w: float = 1.0
     late_w: float = 2.0
-    bug: str | None = None   # simulator error: "late_at_dispatch" measures lateness at dispatch time, not at arrival
+    bug: str | None = None   # simulator error: "late_at_dispatch" measures lateness at dispatch time, not at arrival;
+                             # "no_late_cost" charges no lateness at all
+
+    def __post_init__(self):
+        if self.bug not in BUGS:
+            raise ValueError(f"unknown bug {self.bug!r}; expected one of {BUGS}")
 
     @property
     def U(self) -> float:
@@ -49,6 +54,8 @@ class DespachoConfig:
         """A demand profile: overrides on top of "mediano"."""
         return replace(cls.from_size("mediano"), bug=bug, **PROFILES[name])
 
+
+BUGS = (None, "late_at_dispatch", "no_late_cost")
 
 _SIZES = {
     "diminuto": dict(width=3, height=1, n_trucks=2, capacity=2, max_pending=1, horizon=6,
@@ -155,6 +162,8 @@ class DespachoCore:
         return abs(tr[0] - p[0]) + abs(tr[1] - p[1])
 
     def lateness(self, s: int, k: int) -> int:
+        if self.cfg.bug == "no_late_cost":
+            return 0
         arrival = self.t if self.cfg.bug == "late_at_dispatch" else self.t + self.dist(s, k)   # the bug ignores travel time
         return min(self.cfg.horizon, max(0, arrival - self.pend[s][3]))
 

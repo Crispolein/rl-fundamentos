@@ -789,22 +789,28 @@ en "diminuto" (valor esperado del estado inicial; es negativo porque son costos)
 ### L12 · Currículo generalista → especialista y negocio (`12_curriculo_negocio`, MiniDespacho y MiniCartas)
 - **Objetivo:** entrenar primero un generalista y afinar un especialista; llevar el pipeline a un problema de negocio:
   simulador, brecha sim-to-real y explotación de errores del simulador.
-- **Crea:** en `envs/despacho.py`: perfiles de demanda (`PROFILES = {"urgente", "holgado", "pesado"}`, ver abajo) y la
-  variante con error `bug="late_at_dispatch"`. **Usa:** `PPO`, `MiniPTCGNet` o `MLPActorCritic` (el que menos tarde),
+- **Crea:** en `envs/despacho.py`: perfiles de demanda (`PROFILES = {"urgente", "holgado", "pesado"}`, ver abajo) y las
+  variantes con error `bug="late_at_dispatch"` y `bug="no_late_cost"` (T35, rediseño del 2026-09-29). **Usa:** `PPO`, `MiniPTCGNet` o `MLPActorCritic` (el que menos tarde),
   `GreedyDespacho`, `HeuristicCartas`.
 - **Perfiles** (sobre "mediano"): `urgente` = `p_arrival 0,6`, `slack_range (2,4)`; `holgado` = `p_arrival 0,25`,
   `slack_range (5,9)`; `pesado` = `qty_range (2,3)`, `capacity 15`. **Error del simulador** `late_at_dispatch`: D7 mide el
   atraso con `max(0, t − due)` en lugar de `max(0, t + d − due)` (el atraso se cobra al despachar, no al llegar); es un
   error realista (medir en el momento equivocado) que premia mandar camiones lejanos sin costo de atraso.
+  **Error grueso** `no_late_cost`: el simulador no cobra atraso en absoluto (la recompensa es solo `−distancia`; el costo de no
+  atender un pedido, `U`, sí se cobra). Se usa en el criterio (b); `late_at_dispatch` queda como experimento adicional sin `assert`.
+  **Rediseño del experimento (Christian, 2026-09-29; umbrales sin cambios):** el **generalista se entrena solo en `holgado`, `pesado` y
+  `mediano`** (nunca en `urgente`) con presupuesto limitado (200 000 pasos); el **especialista** es una copia de sus pesos afinada en
+  `urgente` (200 000 pasos, lr menor); el **agente con error** es otra copia afinada con el mismo presupuesto en `urgente` con
+  `bug="no_late_cost"`. Así especializar aporta de verdad (el generalista no vio `urgente`) y el error del simulador tiene un mecanismo claro.
 - **Experimentos:** (1) generalista vs especialista en `urgente`; (2) el especialista evaluado en un perfil que no es el suyo;
   (3) ¿cuánto sube la recompensa reportada en el simulador con error frente al simulador correcto?; (4) MiniCartas:
   generalista (mazos aleatorios) vs especialista `aggro`, sin criterio, presupuestos de 60 s y 40 s.
 - **Criterio (n = 1000 semillas de evaluación en el simulador correcto):** (a) en el perfil `urgente`, especialista −
-  generalista, diferencia pareada **LB > 0**; (b) agente afinado en el simulador con error − especialista (ambos evaluados
+  generalista, diferencia pareada **LB > 0**; (b) agente afinado en el simulador con error `no_late_cost` − especialista (ambos evaluados
   en el simulador correcto) : diferencia pareada **UB < 0** (la política que explota el error rinde peor en la realidad).
   Ambos parten del mismo generalista y se afinan con el mismo presupuesto.
-- **Presupuesto:** ≤ 8 min (generalista 2,5 min, especialista 1 min, agente con error 1 min, parte MiniCartas 1,7 min,
-  evaluaciones 1,8 min).
+- **Presupuesto:** ≤ 8 min (generalista 1 min, especialista 1 min, agente con error 1 min, parte MiniCartas 1,6 min,
+  evaluaciones ≈ 1,5 min); notebook completo ≈ 6 min.
 
 ## 8. Definición de "tarea terminada"
 
@@ -894,3 +900,10 @@ de asiento de R7). Un umbral de criterio nunca se edita aquí: solo Christian lo
   Diagnóstico: entrenando desde cero solo en `urgente` la política se estanca en ≈ −162 a −168 (200 000 pasos −181,0; 400 000 −167,7; 600 000 −164,8; 800 000 −167,4; 1 000 000 −162,2), el mismo nivel que ya tiene el generalista: no hay margen medible para especializar en este
   perfil, y la variación entre checkpoints (±3–4) es mayor que cualquier ganancia. Para (b) el agente afinado con el error no rinde peor que el especialista en el simulador correcto con estos presupuestos (la diferencia oscila entre −1,8 y +4,1, IC que incluyen 0),
   aunque sí **reporta ≈ 25 unidades más** en el simulador con error (−140 frente a −165). Falta decidir por Christian: cambiar el perfil del criterio (a) (p. ej. `pesado`, donde la capacidad sí cambia la política), cambiar el presupuesto/diseño del generalista, o el tamaño del error del simulador.
+- 2026-09-29 · **T35 REDISEÑADA Y RESUELTA** (Christian aprobó el rediseño del experimento el 2026-09-29, tras el bloqueo de las 4 configuraciones anteriores: con el diseño anterior el efecto no existía; **no se tocó ningún umbral**: (a) sigue siendo especialista − generalista en `urgente` con LB > 0 y (b) sigue siendo agente afinado con error − especialista, evaluado en el simulador correcto, con UB < 0).
+  Cambios: (a) el generalista se entrena solo en `holgado`+`pesado`+`mediano` (entornos repartidos por turnos), **200 000 pasos**, y el especialista es una copia de sus pesos afinada 200 000 pasos en `urgente` (lr 5e-4); (b) nueva variante `bug="no_late_cost"` (el simulador no cobra atraso en absoluto) con su test en `envs/despacho.py`; el agente con error es otra copia del mismo generalista afinada 200 000 pasos con ese error.
+  `late_at_dispatch` queda como experimento adicional sin `assert`. `PointerActorCritic`, PPO γ = 0,97, λ = 0,9, 10 épocas × 8 minibatches, reward_scale 1/68, política greedy, n = 1000 semillas de evaluación. Primera configuración probada (no hizo falta un segundo intento); notebook ≈ 5,7 min.
+  Medido, semilla 0: aleatorio −242,5, greedy −179,6, generalista −204,9, especialista −158,1 → **(a) especialista − generalista = +46,79 [35,01; 58,57]** (LB > 0 ✓). Agente `no_late_cost`: reporta −137,0, real −174,2 → **(b) error − especialista = −16,05 [−20,33; −11,78]** (UB < 0 ✓).
+  Extra `late_at_dispatch`: reporta −144,9, real −180,4, error − especialista −22,30 [−28,31; −16,30]. Fuera de `urgente` el especialista mejora +10,9 (holgado), +23,4 (pesado), +24,7 (mediano) frente al generalista.
+  Medido, semilla 1: generalista −193,8, especialista −169,8 → **(a) +24,05 [13,87; 34,23]** ✓; `no_late_cost` reporta −138,9, real −225,4 → **(b) −55,64 [−69,62; −41,65]** ✓. Extra `late_at_dispatch`: −2,25 [−8,82; 4,31] (no significativo, por eso el criterio usa el error grueso). Fuera de `urgente`: +1,7, +3,8, +2,0.
+  MiniCartas (sin criterio): con mazo `aggro` contra `HeuristicCartas` (mazo rival al azar) el generalista (180 000 pasos, mazos aleatorios) gana 0,351 [0,322; 0,381] y el especialista (120 000 pasos más con `aggro`) 0,399 [0,369; 0,430] (semilla 0); en la semilla 1, 0,335 y 0,399. `aggro` es un mazo débil: ninguno pasa de 50 %.
