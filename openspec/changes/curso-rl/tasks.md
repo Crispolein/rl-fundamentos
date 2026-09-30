@@ -51,4 +51,4 @@ Las tareas T1–T12 son infraestructura (núcleo, evaluación, entornos); cada l
 
 ## Cierre
 
-- [ ] T36 — README con índice del curso y verificación integral (tests y los 13 notebooks ejecutados con salidas) · files: README.md · verification: pytest -q && python -c "import glob,json,sys; fs=sorted(glob.glob('notebooks/*.ipynb')); bad=[f for f in fs if not any(c.get('outputs') for c in json.load(open(f))['cells'] if c['cell_type']=='code')]; sys.exit(1 if bad or len(fs)!=13 else 0)" && for n in notebooks/*.ipynb; do pytest --nbmake --nbmake-timeout=600 "$n" -q || exit 1; done
+- [x] T36 — README con índice del curso y verificación integral (tests y los 13 notebooks ejecutados con salidas) · files: README.md · verification: pytest -q && python -c "import glob,json,sys; fs=sorted(glob.glob('notebooks/*.ipynb')); bad=[f for f in fs if not any(c.get('outputs') for c in json.load(open(f))['cells'] if c['cell_type']=='code')]; sys.exit(1 if bad or len(fs)!=13 else 0)" && for n in notebooks/*.ipynb; do pytest --nbmake --nbmake-timeout=600 "$n" -q || exit 1; done
